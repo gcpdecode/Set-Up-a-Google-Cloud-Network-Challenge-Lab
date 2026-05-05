@@ -61,12 +61,10 @@ label()   { printf "  ${LAVENDER}${BOLD}◈${RESET}  ${BOLD}${WHITE}%-18s${RESET
 divider() { echo "  ${DIM}${LAVENDER}──────────────────────────────────────────────────${RESET}"; }
 
 run_step() {
-    # Usage: run_step "spinner msg" "ok msg" "fail msg" cmd [args...]
     local spin_msg="$1"; local ok_msg="$2"; local fail_msg="$3"
     shift 3
     "$@" &>/dev/null &
     spinner $! "$spin_msg"
-    # re-run to capture exit code (spinner already consumed it visually)
     if "$@" &>/dev/null; then
         ok "$ok_msg"
     else
@@ -116,8 +114,8 @@ ask SUBNET_B   "SUBNET_B"
 ask FIREWALL_1 "FIREWALL_1"
 ask FIREWALL_2 "FIREWALL_2"
 ask FIREWALL_3 "FIREWALL_3"
-ask ZONE_1     "ZONE_1"     "e.g. us-central1-a"
-ask ZONE_2     "ZONE_2"     "e.g. us-east1-b"
+ask ZONE_1     "ZONE_1"     "e.g. us-east4-b"
+ask ZONE_2     "ZONE_2"     "e.g. us-west1-a"
 
 # Derive regions
 export REGION_1="${ZONE_1%-*}"
@@ -194,7 +192,7 @@ step_banner "Configuring Firewall Rules" "🔥"
 gcloud compute firewall-rules create "$FIREWALL_1" \
     --project="$DEVSHELL_PROJECT_ID" --network="$VPC_NAME" \
     --direction=INGRESS --priority=1000 --action=ALLOW \
-    --rules=tcp:22 --source-ranges=0.0.0.0/0 --target-tags=all &>/dev/null &
+    --rules=tcp:22 --source-ranges=0.0.0.0/0 &>/dev/null &
 spinner $! "$FIREWALL_1  →  SSH (tcp:22) ..."
 gcloud compute firewall-rules describe "$FIREWALL_1" --project="$DEVSHELL_PROJECT_ID" &>/dev/null \
     && ok "${CYAN}${FIREWALL_1}${RESET}  ${DIM}→ INGRESS  tcp:22  SSH${RESET}" \
@@ -204,17 +202,18 @@ echo
 gcloud compute firewall-rules create "$FIREWALL_2" \
     --project="$DEVSHELL_PROJECT_ID" --network="$VPC_NAME" \
     --direction=INGRESS --priority=65535 --action=ALLOW \
-    --rules=tcp:3389 --source-ranges=0.0.0.0/24 --target-tags=all &>/dev/null &
+    --rules=tcp:3389 --source-ranges=0.0.0.0/24 &>/dev/null &
 spinner $! "$FIREWALL_2  →  RDP (tcp:3389) ..."
 gcloud compute firewall-rules describe "$FIREWALL_2" --project="$DEVSHELL_PROJECT_ID" &>/dev/null \
     && ok "${CYAN}${FIREWALL_2}${RESET}  ${DIM}→ INGRESS  tcp:3389  RDP${RESET}" \
     || fail "$FIREWALL_2  creation failed"
 echo
 
+# FIX: ICMP source ranges must be subnet ranges, not 0.0.0.0/24
 gcloud compute firewall-rules create "$FIREWALL_3" \
     --project="$DEVSHELL_PROJECT_ID" --network="$VPC_NAME" \
     --direction=INGRESS --priority=1000 --action=ALLOW \
-    --rules=icmp --source-ranges=0.0.0.0/24 --target-tags=all &>/dev/null &
+    --rules=icmp --source-ranges=10.10.10.0/24,10.10.20.0/24 &>/dev/null &
 spinner $! "$FIREWALL_3  →  ICMP (ping) ..."
 gcloud compute firewall-rules describe "$FIREWALL_3" --project="$DEVSHELL_PROJECT_ID" &>/dev/null \
     && ok "${CYAN}${FIREWALL_3}${RESET}  ${DIM}→ INGRESS  icmp  Ping${RESET}" \
@@ -226,9 +225,12 @@ echo
 # ─────────────────────────────────────────────
 step_banner "Launching VM Instances" "🖥"
 
+# FIX: removed --tags=allow-icmp (lab uses "all instances" target, no tags needed)
 gcloud compute instances create "$VM_1" \
     --project="$DEVSHELL_PROJECT_ID" \
-    --zone="$ZONE_1" --subnet="$SUBNET_A" --tags=allow-icmp &>/dev/null &
+    --zone="$ZONE_1" \
+    --machine-type=e2-micro \
+    --subnet="$SUBNET_A" &>/dev/null &
 spinner $! "Creating  $VM_1  in  $ZONE_1 ..."
 gcloud compute instances describe "$VM_1" --zone="$ZONE_1" --project="$DEVSHELL_PROJECT_ID" &>/dev/null \
     && ok "${VM_1}  →  ${CYAN}${ZONE_1}${RESET}  [${SUBNET_A}]" \
@@ -237,7 +239,9 @@ echo
 
 gcloud compute instances create "$VM_2" \
     --project="$DEVSHELL_PROJECT_ID" \
-    --zone="$ZONE_2" --subnet="$SUBNET_B" --tags=allow-icmp &>/dev/null &
+    --zone="$ZONE_2" \
+    --machine-type=e2-micro \
+    --subnet="$SUBNET_B" &>/dev/null &
 spinner $! "Creating  $VM_2  in  $ZONE_2 ..."
 gcloud compute instances describe "$VM_2" --zone="$ZONE_2" --project="$DEVSHELL_PROJECT_ID" &>/dev/null \
     && ok "${VM_2}  →  ${CYAN}${ZONE_2}${RESET}  [${SUBNET_B}]" \
@@ -249,7 +253,7 @@ echo
 # ─────────────────────────────────────────────
 step_banner "Waiting for VMs to Initialize" "⏳"
 
-for i in $(seq 20 -1 1); do
+for i in $(seq 30 -1 1); do
     printf "\r  ${TEAL}◷${RESET}  ${DIM}${WHITE}VMs booting...  ${RESET}${BOLD}${GOLD}%2d s${RESET}  remaining   " "$i"
     sleep 1
 done
@@ -261,21 +265,24 @@ echo
 # ─────────────────────────────────────────────
 step_banner "Testing VM Connectivity" "📡"
 
-export EXTERNAL_IP_2=$(gcloud compute instances describe "$VM_2" \
+# FIX: Use INTERNAL IP for ping — ICMP firewall only allows subnet ranges, not all external IPs
+export INTERNAL_IP_2=$(gcloud compute instances describe "$VM_2" \
     --zone="$ZONE_2" \
-    --format='get(networkInterfaces[0].accessConfigs[0].natIP)')
+    --project="$DEVSHELL_PROJECT_ID" \
+    --format='get(networkInterfaces[0].networkIP)')
 
-info "External IP of  ${CYAN}${VM_2}${RESET}  →  ${YELLOW}${EXTERNAL_IP_2}${RESET}"
+info "Internal IP of  ${CYAN}${VM_2}${RESET}  →  ${YELLOW}${INTERNAL_IP_2}${RESET}"
 echo
-info "SSH into  ${CYAN}${VM_1}${RESET}  and pinging  ${CYAN}${VM_2}${RESET}..."
+info "SSH into  ${CYAN}${VM_1}${RESET}  and pinging  ${CYAN}${VM_2}${RESET}  via internal IP + hostname..."
 echo
 divider
 
+# FIX: ping internal IP first, then hostname format for latency test
 gcloud compute ssh "$VM_1" \
     --zone="$ZONE_1" \
     --project="$DEVSHELL_PROJECT_ID" \
     --quiet \
-    --command="ping -c 3 $EXTERNAL_IP_2 && ping -c 3 $VM_2.$ZONE_2" \
+    --command="ping -c 3 $INTERNAL_IP_2 && ping -c 3 $VM_2.$ZONE_2" \
     && { echo; ok "Connectivity test  ${CYAN}${VM_1} → ${VM_2}${RESET}  passed 🎯"; } \
     || { echo; fail "Connectivity test failed — check firewall rules"; }
 

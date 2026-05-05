@@ -42,7 +42,7 @@
 **🖥️ Open Cloud Shell → Paste → Done!**
 
 ```bash
-curl -LO raw.githubusercontent.com/gcpdecode/Set-Up-a-Google-Cloud-Network-Challenge-Lab/442a8867273ed06b26fed9b0301fd7b5fdde3910/gsp314.sh
+curl -LO raw.githubusercontent.com/gcpdecode/Set-Up-a-Google-Cloud-Network-Challenge-Lab/eaa5471703622837cccbe7ec9ea9d0138b8ed8b5/gsp314.sh
 sudo chmod +x gsp314.sh
 ./gsp314.sh
 ```
